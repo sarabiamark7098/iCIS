@@ -58,7 +58,6 @@ return [
          * The available color modes.
          */
         'colorModes' => [
-            'system' => 'la-desktop',
             'light' => 'la-sun',
             'dark' => 'la-moon',
         ],
@@ -99,7 +98,7 @@ return [
         /**
          * When true, the password input will have a toggle button to show/hide the password.
          */
-        'showPasswordVisibilityToggler' => false,
+        'showPasswordVisibilityToggler' => true,
     ],
 
     /**
