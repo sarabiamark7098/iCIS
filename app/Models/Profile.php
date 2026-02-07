@@ -7,13 +7,13 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-class Import extends Model
+class Profile extends Model
 {
     use CrudTrait;
     use HasFactory;
     use SoftDeletes;
 
-    protected $table = 'imports';
+    protected $table = 'profiles';
     protected $guarded = ['id'];
 
     /*
@@ -22,18 +22,13 @@ class Import extends Model
     |--------------------------------------------------------------------------
     */
 
-    public function beneficiaries()
+    public function import()
     {
-        return $this->hasMany(Beneficiary::class);
+        return $this->belongsTo(Import::class);
     }
 
-    public function profiles()
+    public function beneficiary()
     {
-        return $this->hasMany(Profile::class);
-    }
-
-    public function transactions()
-    {
-        return $this->hasMany(Transaction::class);
+        return $this->belongsTo(Beneficiary::class);
     }
 }

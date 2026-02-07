@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers\Admin;
 
-use App\Http\Requests\ImportRequest;
+use App\Jobs\ProcessImportJob;
+use App\Models\Import;
+use App\Services\ExcelImportService;
 use Backpack\CRUD\app\Http\Controllers\CrudController;
 use Backpack\CRUD\app\Library\CrudPanel\CrudPanelFacade as CRUD;
+use Illuminate\Http\Request;
 
 /**
  * Class ImportCrudController
@@ -14,16 +17,14 @@ use Backpack\CRUD\app\Library\CrudPanel\CrudPanelFacade as CRUD;
 class ImportCrudController extends CrudController
 {
     use \Backpack\CRUD\app\Http\Controllers\Operations\ListOperation;
-    use \Backpack\CRUD\app\Http\Controllers\Operations\CreateOperation;
-    use \Backpack\CRUD\app\Http\Controllers\Operations\UpdateOperation;
     use \Backpack\CRUD\app\Http\Controllers\Operations\DeleteOperation;
     use \Backpack\CRUD\app\Http\Controllers\Operations\ShowOperation;
 
     /**
-     * Configure the CrudPanel object. Apply settings to all operations.
-     *
-     * @return void
+     * Row threshold: files with more rows than this are dispatched to the queue.
      */
+    protected int $queueThreshold = 1000;
+
     public function setup()
     {
         CRUD::setModel(\App\Models\Import::class);
@@ -31,47 +32,249 @@ class ImportCrudController extends CrudController
         CRUD::setEntityNameStrings('import', 'imports');
     }
 
-    /**
-     * Define what happens when the List operation is loaded.
-     *
-     * @see  https://backpackforlaravel.com/docs/crud-operation-list-entries
-     * @return void
-     */
+    // ------------------------------------------------------------------
+    //  LIST
+    // ------------------------------------------------------------------
+
     protected function setupListOperation()
     {
-        CRUD::setFromDb(); // set columns from db columns.
+        CRUD::column('id');
+        CRUD::column('file_name')->label('File Name');
+        CRUD::column('target_table')->label('Target Table(s)');
+        CRUD::column('status')->label('Status');
+        CRUD::column('imported_rows')->label('Imported Rows');
+        CRUD::column('created_at')->label('Imported At');
 
-        /**
-         * Columns can be defined using the fluent syntax:
-         * - CRUD::column('price')->type('number');
-         */
+        CRUD::addButtonFromView('top', 'import_excel', 'import_excel', 'beginning');
+    }
+
+    // ------------------------------------------------------------------
+    //  STEP 1 — Upload file
+    // ------------------------------------------------------------------
+
+    public function showImportForm()
+    {
+        $this->crud->hasAccessOrFail('list');
+
+        return view('vendor.backpack.crud.import_excel', [
+            'crud' => $this->crud,
+            'title' => 'Import Excel',
+        ]);
+    }
+
+    // ------------------------------------------------------------------
+    //  STEP 2 — Read file, detect sheets
+    // ------------------------------------------------------------------
+
+    public function previewSheets(Request $request, ExcelImportService $importService)
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:xlsx,xls,csv|max:51200',
+        ]);
+
+        $file = $request->file('file');
+        $path = $file->store('imports/temp', 'local');
+        $fullPath = storage_path('app/private/' . $path);
+
+        try {
+            $fileData = $importService->readFile($fullPath);
+        } catch (\Exception $e) {
+            @unlink($fullPath);
+            return back()->with('error', 'Failed to read file: ' . $e->getMessage());
+        }
+
+        if ($fileData['sheet_count'] === 0) {
+            @unlink($fullPath);
+            return back()->with('error', 'No readable sheets found in the file.');
+        }
+
+        session([
+            'import_temp_path' => $fullPath,
+            'import_original_name' => $file->getClientOriginalName(),
+        ]);
+
+        // If only 1 sheet, skip sheet selection and go straight to mapping
+        if ($fileData['sheet_count'] === 1) {
+            $sheetIndex = array_key_first($fileData['sheets']);
+            return $this->showMappingPage($importService, $sheetIndex);
+        }
+
+        // Multiple sheets — show sheet selection page
+        $sheetsInfo = [];
+        foreach ($fileData['sheets'] as $index => $sheet) {
+            $sheetsInfo[$index] = [
+                'name' => $sheet['name'],
+                'header_count' => count($sheet['headers']),
+                'row_count' => count($sheet['rows']),
+                'sample_headers' => array_slice($sheet['headers'], 0, 6),
+            ];
+        }
+
+        return view('vendor.backpack.crud.import_sheets', [
+            'crud' => $this->crud,
+            'title' => 'Select Sheet',
+            'sheetsInfo' => $sheetsInfo,
+        ]);
+    }
+
+    // ------------------------------------------------------------------
+    //  STEP 2b — User picked a sheet, show mapping
+    // ------------------------------------------------------------------
+
+    public function selectSheet(Request $request, ExcelImportService $importService)
+    {
+        $request->validate([
+            'sheet_index' => 'required|integer|min:0',
+        ]);
+
+        return $this->showMappingPage($importService, (int) $request->input('sheet_index'));
     }
 
     /**
-     * Define what happens when the Create operation is loaded.
-     *
-     * @see https://backpackforlaravel.com/docs/crud-operation-create
-     * @return void
+     * Build the mapping page data and return the view.
      */
-    protected function setupCreateOperation()
+    protected function showMappingPage(ExcelImportService $importService, int $sheetIndex)
     {
-        CRUD::setValidation(ImportRequest::class);
-        CRUD::setFromDb(); // set fields from db columns.
+        $filePath = session('import_temp_path');
 
-        /**
-         * Fields can be defined using the fluent syntax:
-         * - CRUD::field('price')->type('number');
-         */
+        if (!$filePath || !file_exists($filePath)) {
+            return redirect()->to($this->crud->route)
+                ->with('error', 'Import session expired. Please upload the file again.');
+        }
+
+        $sheetData = $importService->readSheet($filePath, $sheetIndex);
+
+        if (empty($sheetData['headers'])) {
+            return redirect()->route('import.excel-upload')
+                ->with('error', 'No headers found in the selected sheet.');
+        }
+
+        $tableColumns = $importService->getAllTableColumns();
+        $suggestedMappings = $importService->suggestMultiTableMapping($sheetData['headers']);
+
+        session(['import_sheet_index' => $sheetIndex]);
+
+        return view('vendor.backpack.crud.import_preview', [
+            'crud' => $this->crud,
+            'title' => 'Map Columns',
+            'headers' => $sheetData['headers'],
+            'sampleRows' => $sheetData['sample_rows'],
+            'totalRows' => count($sheetData['rows']),
+            'tableColumns' => $tableColumns,
+            'suggestedMappings' => $suggestedMappings,
+            'sheetIndex' => $sheetIndex,
+            'queueThreshold' => $this->queueThreshold,
+        ]);
     }
 
-    /**
-     * Define what happens when the Update operation is loaded.
-     *
-     * @see https://backpackforlaravel.com/docs/crud-operation-update
-     * @return void
-     */
-    protected function setupUpdateOperation()
+    // ------------------------------------------------------------------
+    //  STEP 3 — Process the import
+    // ------------------------------------------------------------------
+
+    public function processImport(Request $request, ExcelImportService $importService)
     {
-        $this->setupCreateOperation();
+        $request->validate([
+            'mapping_table' => 'required|array',
+            'mapping_column' => 'required|array',
+            'headers' => 'required|array',
+            'sheet_index' => 'required|integer|min:0',
+        ]);
+
+        $filePath = session('import_temp_path');
+        $originalName = session('import_original_name');
+        $sheetIndex = (int) $request->input('sheet_index');
+        $mappingTables = $request->input('mapping_table');
+        $mappingColumns = $request->input('mapping_column');
+
+        if (!$filePath || !file_exists($filePath)) {
+            return redirect()->to($this->crud->route)
+                ->with('error', 'Import session expired. Please upload the file again.');
+        }
+
+        // Build multi-table mapping: headerIndex => ['table' => …, 'column' => …]
+        $mapping = [];
+        $targetTables = [];
+        foreach ($mappingTables as $index => $table) {
+            $column = $mappingColumns[$index] ?? '';
+            if (!empty($table) && !empty($column)) {
+                $mapping[(int) $index] = [
+                    'table' => $table,
+                    'column' => $column,
+                ];
+                $targetTables[$table] = true;
+            }
+        }
+
+        if (empty($mapping)) {
+            return back()->with('error', 'No columns were mapped. Please assign at least one header.');
+        }
+
+        $targetTablesList = implode(', ', array_keys($targetTables));
+
+        // Count rows to decide sync vs queue
+        $sheetData = $importService->readSheet($filePath, $sheetIndex);
+        $rowCount = count($sheetData['rows']);
+
+        // Create import record
+        $import = Import::create([
+            'file_name' => $originalName,
+            'target_table' => $targetTablesList,
+            'status' => 'pending',
+        ]);
+
+        // Clean up session
+        session()->forget(['import_temp_path', 'import_original_name', 'import_sheet_index']);
+
+        if ($rowCount > $this->queueThreshold) {
+            // Large file → dispatch to queue
+            $import->update(['status' => 'queued']);
+            ProcessImportJob::dispatch($import->id, $filePath, $sheetIndex, $mapping);
+
+            return redirect()->to($this->crud->route)
+                ->with('success', "Import queued for background processing ({$rowCount} rows). Status will update when complete.");
+        }
+
+        // Small file → process synchronously
+        try {
+            $import->update(['status' => 'processing']);
+
+            $result = $importService->importWithMultiTableMapping(
+                $filePath, $sheetIndex, $import->id, $mapping
+            );
+
+            $totalImported = $result['beneficiaries_imported']
+                + $result['profiles_imported']
+                + $result['transactions_imported'];
+
+            $import->update([
+                'status' => 'completed',
+                'imported_rows' => $totalImported,
+            ]);
+
+            @unlink($filePath);
+
+            $parts = [];
+            if ($result['beneficiaries_imported'] > 0) {
+                $parts[] = "{$result['beneficiaries_imported']} beneficiaries";
+            }
+            if ($result['profiles_imported'] > 0) {
+                $parts[] = "{$result['profiles_imported']} profiles";
+            }
+            if ($result['transactions_imported'] > 0) {
+                $parts[] = "{$result['transactions_imported']} transactions";
+            }
+            $message = 'Import completed: ' . implode(', ', $parts) . '.';
+            if ($result['skipped_rows'] > 0) {
+                $message .= " {$result['skipped_rows']} rows skipped.";
+            }
+
+            return redirect()->to($this->crud->route)->with('success', $message);
+        } catch (\Exception $e) {
+            $import->update(['status' => 'failed']);
+            @unlink($filePath);
+
+            return redirect()->to($this->crud->route)
+                ->with('error', 'Import failed: ' . $e->getMessage());
+        }
     }
 }

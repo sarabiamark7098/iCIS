@@ -18,7 +18,15 @@ Route::group([
 ], function () { // custom admin routes
 //    Route::crud('user', 'UserCrudController');
     Route::crud('beneficiary', 'BeneficiaryCrudController');
+
+    // Excel import routes (must be before Route::crud to avoid conflicts)
+    Route::get('import/excel-upload', 'ImportCrudController@showImportForm')->name('import.excel-upload');
+    Route::post('import/excel-preview', 'ImportCrudController@previewSheets')->name('import.excel-preview');
+    Route::post('import/excel-select-sheet', 'ImportCrudController@selectSheet')->name('import.excel-select-sheet');
+    Route::post('import/excel-process', 'ImportCrudController@processImport')->name('import.excel-process');
+
     Route::crud('import', 'ImportCrudController');
+    Route::crud('user', 'UserCrudController');
 }); // this should be the absolute last line of this file
 
 /**

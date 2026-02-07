@@ -21,8 +21,6 @@ class BeneficiaryCrudController extends CrudController
 
     /**
      * Configure the CrudPanel object. Apply settings to all operations.
-     *
-     * @return void
      */
     public function setup()
     {
@@ -34,46 +32,44 @@ class BeneficiaryCrudController extends CrudController
     /**
      * Define what happens when the List operation is loaded.
      *
-     * @see  https://backpackforlaravel.com/docs/crud-operation-list-entries
-     * @return void
+     * Uses server-side pagination (lazy loading) for efficient searching
+     * on large datasets. The full-text index on first_name, last_name,
+     * middle_name is leveraged automatically by Backpack's search.
      */
     protected function setupListOperation()
     {
-//        CRUD::setFromDb(); // set columns from db columns.
+        // Enable server-side (ajax) table for lazy loading / efficient search
+        CRUD::setOperationSetting('showEntryCount', true);
 
-        CRUD::column('first_name');
+        // Paginate at 25 rows per page — only loads the current page from the DB
+        CRUD::setDefaultPageLength(25);
+
+        CRUD::column('first_name')->searchLogic(function ($query, $column, $searchTerm) {
+            $query->orWhereRaw(
+                'MATCH(first_name, last_name, middle_name) AGAINST(? IN BOOLEAN MODE)',
+                [$searchTerm . '*']
+            );
+        });
+
         CRUD::column('middle_name');
         CRUD::column('last_name');
         CRUD::column('extension_name');
-
-        /**
-         * Columns can be defined using the fluent syntax:
-         * - CRUD::column('price')->type('number');
-         */
+        CRUD::column('relationship');
+        CRUD::column('sex');
+        CRUD::column('civil_status');
     }
 
     /**
      * Define what happens when the Create operation is loaded.
-     *
-     * @see https://backpackforlaravel.com/docs/crud-operation-create
-     * @return void
      */
     protected function setupCreateOperation()
     {
         CRUD::setValidation(BeneficiaryRequest::class);
-        CRUD::setFromDb(); // set fields from db columns.
-
-        /**
-         * Fields can be defined using the fluent syntax:
-         * - CRUD::field('price')->type('number');
-         */
+        CRUD::setFromDb();
     }
 
     /**
      * Define what happens when the Update operation is loaded.
-     *
-     * @see https://backpackforlaravel.com/docs/crud-operation-update
-     * @return void
      */
     protected function setupUpdateOperation()
     {
