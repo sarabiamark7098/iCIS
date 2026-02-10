@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Imports\DynamicImport;
+use Carbon\Carbon;
 
 class ExcelImportService
 {
@@ -36,6 +37,46 @@ class ExcelImportService
      * Batch size for chunked inserts.
      */
     protected int $batchSize = 500;
+
+    /**
+     * Header aliases: normalized_alias => ['table' => ..., 'column' => ...]
+     * Handles common header variants from both file formats.
+     */
+    protected array $headerAliases = [
+        // === PROFILES (main person / client — February CSV format) ===
+        'lastname'          => ['table' => 'profiles', 'column' => 'last_name'],
+        'firstname'         => ['table' => 'profiles', 'column' => 'first_name'],
+        'middlename'        => ['table' => 'profiles', 'column' => 'middle_name'],
+        'extraname'         => ['table' => 'profiles', 'column' => 'extension_name'],
+        'dob'               => ['table' => 'profiles', 'column' => 'birthday'],
+        'clientcategory'    => ['table' => 'profiles', 'column' => 'category'],
+        'citymunicipality'  => ['table' => 'profiles', 'column' => 'city'],
+
+        // === BENEFICIARIES (B. prefix columns from February CSV) ===
+        'b_last_name'       => ['table' => 'beneficiaries', 'column' => 'last_name'],
+        'b_first_name'      => ['table' => 'beneficiaries', 'column' => 'first_name'],
+        'b_middle_name'     => ['table' => 'beneficiaries', 'column' => 'middle_name'],
+        'b_ext'             => ['table' => 'beneficiaries', 'column' => 'extension_name'],
+
+        // === BENEFICIARIES (Maragusan sheet — columns without B. prefix) ===
+        'last_name'         => ['table' => 'beneficiaries', 'column' => 'last_name'],
+        'first_name'        => ['table' => 'beneficiaries', 'column' => 'first_name'],
+        'middle_name'       => ['table' => 'beneficiaries', 'column' => 'middle_name'],
+        'extension_name'    => ['table' => 'beneficiaries', 'column' => 'extension_name'],
+        'birthday'          => ['table' => 'beneficiaries', 'column' => 'birthday'],
+        'contact_number'    => ['table' => 'beneficiaries', 'column' => 'contact_number'],
+        'sub_category'      => ['table' => 'beneficiaries', 'column' => 'sub_category'],
+        'subcategory'       => ['table' => 'beneficiaries', 'column' => 'sub_category'],
+
+        // === TRANSACTIONS ===
+        'entered_by'            => ['table' => 'transactions', 'column' => 'entered_by'],
+        'type_of_assistance1'   => ['table' => 'transactions', 'column' => 'assistance_type'],
+        'type_of_assistance'    => ['table' => 'transactions', 'column' => 'assistance_type'],
+        'amount1'               => ['table' => 'transactions', 'column' => 'assistance_amount'],
+        'amount'                => ['table' => 'transactions', 'column' => 'assistance_amount'],
+        'mode_of_release1'      => ['table' => 'transactions', 'column' => 'assistance_mode'],
+        'mode_of_release'       => ['table' => 'transactions', 'column' => 'assistance_mode'],
+    ];
 
     // ------------------------------------------------------------------
     //  READING
@@ -77,6 +118,24 @@ class ExcelImportService
         ];
     }
 
+    /**
+     * Find the index of a sheet named "Clean" (case-insensitive).
+     * Returns null if not found.
+     */
+    public function findCleanSheetIndex(string $filePath): ?int
+    {
+        $import = new DynamicImport();
+        Excel::import($import, $filePath);
+
+        foreach ($import->getSheetNames() as $index => $name) {
+            if (Str::lower(trim($name)) === 'clean') {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
     // ------------------------------------------------------------------
     //  TABLE / COLUMN INFO
     // ------------------------------------------------------------------
@@ -114,6 +173,7 @@ class ExcelImportService
 
     /**
      * Suggest a mapping from file headers to table columns by normalizing names.
+     * Uses both column-name matching and a custom alias map for known header variants.
      *
      * Returns: [ headerIndex => ['table' => '…', 'column' => '…'] , … ]
      */
@@ -134,8 +194,45 @@ class ExcelImportService
             }
         }
 
+        // Detect if file has B. prefix columns (February CSV format)
+        $hasBPrefixColumns = false;
+        foreach ($headers as $header) {
+            $norm = $this->normalize($header);
+            if (Str::startsWith($norm, 'b_')) {
+                $hasBPrefixColumns = true;
+                break;
+            }
+        }
+
         foreach ($headers as $index => $header) {
             $normalizedHeader = $this->normalize($header);
+
+            // 1. Check alias map first (highest priority)
+            if (isset($this->headerAliases[$normalizedHeader])) {
+                $alias = $this->headerAliases[$normalizedHeader];
+                $suggestions[$index] = $alias;
+                continue;
+            }
+
+            // 2. If file has B. prefix columns, non-prefixed demographic columns go to profiles
+            if ($hasBPrefixColumns) {
+                $profileOverrides = [
+                    'sex'          => ['table' => 'profiles', 'column' => 'sex'],
+                    'civilstatus'  => ['table' => 'profiles', 'column' => 'civil_status'],
+                    'civil_status' => ['table' => 'profiles', 'column' => 'civil_status'],
+                    'occupation'   => ['table' => 'profiles', 'column' => 'occupation'],
+                    'region'       => ['table' => 'profiles', 'column' => 'region'],
+                    'province'     => ['table' => 'profiles', 'column' => 'province'],
+                    'barangay'     => ['table' => 'profiles', 'column' => 'barangay'],
+                    'category'     => ['table' => 'profiles', 'column' => 'category'],
+                ];
+                if (isset($profileOverrides[$normalizedHeader])) {
+                    $suggestions[$index] = $profileOverrides[$normalizedHeader];
+                    continue;
+                }
+            }
+
+            // 3. Fall back to column-name matching
             if (isset($lookup[$normalizedHeader])) {
                 $suggestions[$index] = $lookup[$normalizedHeader];
             }
@@ -158,13 +255,8 @@ class ExcelImportService
      *    beneficiary.
      *  - If ONLY one set of name columns has data → save it as a beneficiary with
      *    relationship = "Self".
-     *
-     * @param  string  $filePath
-     * @param  int     $sheetIndex
-     * @param  int     $importId
-     * @param  array   $mapping  headerIndex => ['table' => '…', 'column' => '…']
-     *
-     * @return array   Statistics
+     *  - If beneficiary name columns are empty but profile name columns have data → copy
+     *    profile name fields into the beneficiary record.
      */
     public function importWithMultiTableMapping(
         string $filePath,
@@ -253,6 +345,17 @@ class ExcelImportService
 
             foreach ($colMap as $headerIndex => $column) {
                 $value = $row[$headerIndex] ?? null;
+
+                // Parse birthday values from various formats
+                if ($column === 'birthday' && $value !== null && $value !== '') {
+                    $value = $this->parseBirthday($value);
+                }
+
+                // Normalize sex values
+                if ($column === 'sex' && $value !== null && $value !== '') {
+                    $value = $this->normalizeSex($value);
+                }
+
                 if ($value !== null && $value !== '') {
                     $hasData = true;
                 }
@@ -300,7 +403,7 @@ class ExcelImportService
             }
 
             if ($benHasName && !$proHasName) {
-                // Only one name → save as beneficiary with relationship = "Self"
+                // Only beneficiary name → save as beneficiary with relationship = "Self"
                 $benData = $records['beneficiaries']['data'];
                 $benData['relationship'] = 'Self';
 
@@ -312,13 +415,26 @@ class ExcelImportService
                 $beneficiaryId = DB::table('beneficiaries')->insertGetId($benRecord);
                 $stats['beneficiaries_imported']++;
 
-                // Also insert transaction if mapped, linked to beneficiary
+                // Still create the profile record if it has other data
+                if (isset($records['profiles']) && $records['profiles']['has_data']) {
+                    $proRecord = array_merge(
+                        ['import_id' => $importId, 'beneficiary_id' => $beneficiaryId],
+                        $records['profiles']['data'],
+                        $timestamps
+                    );
+                    $profileId = DB::table('profiles')->insertGetId($proRecord);
+                    $stats['profiles_imported']++;
+                }
+
                 if (isset($records['transactions']) && $records['transactions']['has_data']) {
                     $txRecord = array_merge(
                         ['import_id' => $importId, 'beneficiary_id' => $beneficiaryId],
                         $records['transactions']['data'],
                         $timestamps
                     );
+                    if (isset($profileId)) {
+                        $txRecord['profile_id'] = $profileId;
+                    }
                     DB::table('transactions')->insert($txRecord);
                     $stats['transactions_imported']++;
                 }
@@ -327,8 +443,17 @@ class ExcelImportService
             }
 
             if (!$benHasName && $proHasName) {
-                // Only profile name → save profile name as beneficiary with "Self"
-                $benData = $records['profiles']['data'];
+                // Only profile name → copy profile name fields into beneficiary
+                $proData = $records['profiles']['data'] ?? [];
+                $benData = $records['beneficiaries']['data'] ?? [];
+
+                // Copy name fields from profile to beneficiary where beneficiary is empty
+                $nameFields = ['first_name', 'last_name', 'middle_name', 'extension_name'];
+                foreach ($nameFields as $field) {
+                    if (empty($benData[$field]) && !empty($proData[$field])) {
+                        $benData[$field] = $proData[$field];
+                    }
+                }
                 $benData['relationship'] = 'Self';
 
                 $benRecord = array_merge(
@@ -339,9 +464,18 @@ class ExcelImportService
                 $beneficiaryId = DB::table('beneficiaries')->insertGetId($benRecord);
                 $stats['beneficiaries_imported']++;
 
+                // Still create the profile record linked to the beneficiary
+                $proRecord = array_merge(
+                    ['import_id' => $importId, 'beneficiary_id' => $beneficiaryId],
+                    $proData,
+                    $timestamps
+                );
+                $profileId = DB::table('profiles')->insertGetId($proRecord);
+                $stats['profiles_imported']++;
+
                 if (isset($records['transactions']) && $records['transactions']['has_data']) {
                     $txRecord = array_merge(
-                        ['import_id' => $importId, 'beneficiary_id' => $beneficiaryId],
+                        ['import_id' => $importId, 'profile_id' => $profileId, 'beneficiary_id' => $beneficiaryId],
                         $records['transactions']['data'],
                         $timestamps
                     );
@@ -409,6 +543,68 @@ class ExcelImportService
         if (!$rowInserted) {
             $stats['skipped_rows']++;
         }
+    }
+
+    /**
+     * Parse birthday value from various formats into Y-m-d string.
+     */
+    protected function parseBirthday($value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        // If it's a numeric value (Excel serial date number)
+        if (is_numeric($value) && (int) $value > 10000) {
+            try {
+                $date = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject((int) $value);
+                return $date->format('Y-m-d');
+            } catch (\Exception $e) {
+                // Fall through to string parsing
+            }
+        }
+
+        // Try common date formats
+        $formats = ['Y-m-d', 'm/d/Y', 'd/m/Y', 'Y/m/d', 'm-d-Y', 'd-m-Y'];
+        foreach ($formats as $format) {
+            try {
+                $date = Carbon::createFromFormat($format, (string) $value);
+                if ($date && $date->year > 1900 && $date->year < 2030) {
+                    return $date->format('Y-m-d');
+                }
+            } catch (\Exception $e) {
+                continue;
+            }
+        }
+
+        // Try Carbon's general parser
+        try {
+            $date = Carbon::parse((string) $value);
+            if ($date->year > 1900 && $date->year < 2030) {
+                return $date->format('Y-m-d');
+            }
+        } catch (\Exception $e) {
+            // Unable to parse
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize sex value to lowercase 'male' or 'female'.
+     */
+    protected function normalizeSex($value): ?string
+    {
+        $value = Str::lower(trim((string) $value));
+
+        if (in_array($value, ['male', 'm'])) {
+            return 'male';
+        }
+        if (in_array($value, ['female', 'f'])) {
+            return 'female';
+        }
+
+        return null;
     }
 
     /**

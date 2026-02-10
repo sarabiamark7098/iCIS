@@ -19,6 +19,7 @@ class ImportCrudController extends CrudController
     use \Backpack\CRUD\app\Http\Controllers\Operations\ListOperation;
     use \Backpack\CRUD\app\Http\Controllers\Operations\DeleteOperation;
     use \Backpack\CRUD\app\Http\Controllers\Operations\ShowOperation;
+    use \Backpack\CRUD\app\Http\Controllers\Operations\UpdateOperation;
 
     /**
      * Row threshold: files with more rows than this are dispatched to the queue.
@@ -38,14 +39,115 @@ class ImportCrudController extends CrudController
 
     protected function setupListOperation()
     {
+        // Filter by status: active (default), archived, trashed
+        $filter = request()->get('show', 'active');
+
+        if ($filter === 'archived') {
+            CRUD::addBaseClause('archived');
+        } elseif ($filter === 'trashed') {
+            CRUD::addBaseClause('onlyTrashed');
+        } else {
+            CRUD::addBaseClause('active');
+        }
+
         CRUD::column('id');
         CRUD::column('file_name')->label('File Name');
         CRUD::column('target_table')->label('Target Table(s)');
         CRUD::column('status')->label('Status');
         CRUD::column('imported_rows')->label('Imported Rows');
+
+        CRUD::addColumn([
+            'name' => 'serving_status',
+            'label' => 'Serving Status',
+            'type' => 'text',
+            'wrapper' => [
+                'element' => 'span',
+                'class' => function ($crud, $column, $entry) {
+                    $colors = [
+                        'Daily Served' => 'badge bg-success',
+                        'Payout Served' => 'badge bg-info',
+                        'Scheduled Payout' => 'badge bg-warning text-dark',
+                    ];
+                    return $colors[$entry->serving_status] ?? 'badge bg-secondary';
+                },
+            ],
+        ]);
+
+        CRUD::addColumn([
+            'name' => 'payout_schedule_date',
+            'label' => 'Payout Date',
+            'type' => 'date',
+        ]);
+
+        CRUD::addColumn([
+            'name' => 'remark',
+            'label' => 'Remark',
+            'type' => 'text',
+            'limit' => 50,
+        ]);
+
         CRUD::column('created_at')->label('Imported At');
 
         CRUD::addButtonFromView('top', 'import_excel', 'import_excel', 'beginning');
+        CRUD::addButtonFromView('top', 'import_filter_tabs', 'import_filter_tabs', 'end');
+
+        // Line buttons based on filter
+        if ($filter === 'trashed') {
+            CRUD::addButtonFromView('line', 'restore_import', 'restore_import', 'beginning');
+            CRUD::removeButton('delete');
+        } elseif ($filter === 'archived') {
+            CRUD::addButtonFromView('line', 'unarchive_import', 'unarchive_import', 'beginning');
+        } else {
+            CRUD::addButtonFromView('line', 'archive_import', 'archive_import', 'beginning');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    //  SHOW
+    // ------------------------------------------------------------------
+
+    protected function setupShowOperation()
+    {
+        CRUD::column('id');
+        CRUD::column('file_name')->label('File Name');
+        CRUD::column('target_table')->label('Target Table(s)');
+        CRUD::column('status')->label('Import Status');
+        CRUD::column('imported_rows')->label('Imported Rows');
+        CRUD::column('serving_status')->label('Serving Status');
+        CRUD::column('payout_schedule_date')->label('Payout Schedule Date')->type('date');
+        CRUD::column('remark')->label('Remark');
+        CRUD::column('created_at')->label('Imported At');
+
+        CRUD::addColumn([
+            'name' => 'archived_at',
+            'label' => 'Archived At',
+            'type' => 'datetime',
+        ]);
+    }
+
+    // ------------------------------------------------------------------
+    //  UPDATE (for editing remark, serving_status, payout_schedule_date)
+    // ------------------------------------------------------------------
+
+    protected function setupUpdateOperation()
+    {
+        CRUD::field('remark')->type('textarea')->label('Remark');
+
+        CRUD::addField([
+            'name' => 'serving_status',
+            'label' => 'Serving Status',
+            'type' => 'select_from_array',
+            'options' => [
+                '' => '-- None --',
+                'Daily Served' => 'Daily Served',
+                'Payout Served' => 'Payout Served',
+                'Scheduled Payout' => 'Scheduled Payout',
+            ],
+            'allows_null' => true,
+        ]);
+
+        CRUD::field('payout_schedule_date')->type('date')->label('Payout Schedule Date')
+            ->hint('Only required when Serving Status is "Scheduled Payout".');
     }
 
     // ------------------------------------------------------------------
@@ -99,7 +201,14 @@ class ImportCrudController extends CrudController
             return $this->showMappingPage($importService, $sheetIndex);
         }
 
-        // Multiple sheets — show sheet selection page
+        // Auto-detect "Clean" sheet for multi-sheet files
+        foreach ($fileData['sheet_names'] as $index => $name) {
+            if (strtolower(trim($name)) === 'clean') {
+                return $this->showMappingPage($importService, $index);
+            }
+        }
+
+        // Multiple sheets, no "Clean" sheet found — show sheet selection page
         $sheetsInfo = [];
         foreach ($fileData['sheets'] as $index => $sheet) {
             $sheetsInfo[$index] = [
@@ -185,6 +294,9 @@ class ImportCrudController extends CrudController
         $sheetIndex = (int) $request->input('sheet_index');
         $mappingTables = $request->input('mapping_table');
         $mappingColumns = $request->input('mapping_column');
+        $remark = $request->input('remark');
+        $servingStatus = $request->input('serving_status');
+        $payoutScheduleDate = $request->input('payout_schedule_date');
 
         if (!$filePath || !file_exists($filePath)) {
             return redirect()->to($this->crud->route)
@@ -220,6 +332,9 @@ class ImportCrudController extends CrudController
             'file_name' => $originalName,
             'target_table' => $targetTablesList,
             'status' => 'pending',
+            'remark' => $remark,
+            'serving_status' => $servingStatus ?: null,
+            'payout_schedule_date' => $servingStatus === 'Scheduled Payout' ? $payoutScheduleDate : null,
         ]);
 
         // Clean up session
@@ -276,5 +391,39 @@ class ImportCrudController extends CrudController
             return redirect()->to($this->crud->route)
                 ->with('error', 'Import failed: ' . $e->getMessage());
         }
+    }
+
+    // ------------------------------------------------------------------
+    //  ARCHIVE / UNARCHIVE / RESTORE
+    // ------------------------------------------------------------------
+
+    public function archive($id)
+    {
+        $this->crud->hasAccessOrFail('list');
+
+        $import = Import::findOrFail($id);
+        $import->archive();
+
+        return redirect()->back()->with('success', "Import \"{$import->file_name}\" has been archived.");
+    }
+
+    public function unarchive($id)
+    {
+        $this->crud->hasAccessOrFail('list');
+
+        $import = Import::archived()->findOrFail($id);
+        $import->unarchive();
+
+        return redirect()->back()->with('success', "Import \"{$import->file_name}\" has been restored from archive.");
+    }
+
+    public function restore($id)
+    {
+        $this->crud->hasAccessOrFail('list');
+
+        $import = Import::onlyTrashed()->findOrFail($id);
+        $import->restore();
+
+        return redirect()->back()->with('success', "Import \"{$import->file_name}\" has been restored.");
     }
 }

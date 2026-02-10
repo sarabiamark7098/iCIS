@@ -25,6 +25,11 @@ Route::group([
     Route::post('import/excel-select-sheet', 'ImportCrudController@selectSheet')->name('import.excel-select-sheet');
     Route::post('import/excel-process', 'ImportCrudController@processImport')->name('import.excel-process');
 
+    // Import archive/unarchive/restore routes
+    Route::post('import/{id}/archive', 'ImportCrudController@archive')->name('import.archive');
+    Route::post('import/{id}/unarchive', 'ImportCrudController@unarchive')->name('import.unarchive');
+    Route::post('import/{id}/restore', 'ImportCrudController@restore')->name('import.restore');
+
     Route::crud('import', 'ImportCrudController');
     Route::crud('user', 'UserCrudController');
     Route::crud('profile', 'ProfileCrudController');

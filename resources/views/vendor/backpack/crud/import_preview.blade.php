@@ -133,6 +133,38 @@
                     </div>
                 @endif
 
+                {{-- Import Details --}}
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="la la-clipboard"></i> Import Details</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-12 mb-3">
+                                <label for="remark" class="form-label fw-bold">Remark</label>
+                                <textarea name="remark" id="remark" class="form-control" rows="3"
+                                          placeholder="Enter detailed remarks about this import (e.g., purpose, source, notes)..."></textarea>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="serving_status" class="form-label fw-bold">Serving Status</label>
+                                <select name="serving_status" id="serving_status" class="form-control">
+                                    <option value="">-- Select Status --</option>
+                                    <option value="Daily Served">Daily Served</option>
+                                    <option value="Payout Served">Payout Served</option>
+                                    <option value="Scheduled Payout">Scheduled Payout</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3" id="payoutDateGroup" style="display: none;">
+                                <label for="payout_schedule_date" class="form-label fw-bold">Payout Schedule Date</label>
+                                <input type="date" name="payout_schedule_date" id="payout_schedule_date" class="form-control">
+                                <small class="form-text text-muted">This date can be updated later if the schedule changes.</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 {{-- Action Buttons --}}
                 <div class="card mt-3">
                     <div class="card-body d-flex justify-content-between">
@@ -281,6 +313,20 @@
 
         return hasDup;
     }
+
+    // ---- Serving status: show/hide payout date ----
+    document.getElementById('serving_status').addEventListener('change', function () {
+        const group = document.getElementById('payoutDateGroup');
+        const input = document.getElementById('payout_schedule_date');
+        if (this.value === 'Scheduled Payout') {
+            group.style.display = '';
+            input.required = true;
+        } else {
+            group.style.display = 'none';
+            input.required = false;
+            input.value = '';
+        }
+    });
 
     function updateSummary() {
         // First reset all badges

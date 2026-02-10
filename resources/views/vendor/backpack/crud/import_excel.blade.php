@@ -57,7 +57,6 @@
                 <div class="card-body">
                     <ol>
                         <li><strong>Upload your file</strong> &mdash; The first row of each sheet must be column headers.</li>
-                        <li><strong>Select a sheet</strong> &mdash; If your file has multiple sheets, pick the one to import.</li>
                         <li><strong>Map the headers</strong> &mdash; Assign each header to a table and column. You can map to multiple tables at once (beneficiaries, profiles, transactions).</li>
                         <li><strong>Confirm &amp; Import</strong> &mdash; Review your mapping and insert the data. Large files (1000+ rows) are processed in the background.</li>
                     </ol>

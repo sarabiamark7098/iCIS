@@ -16,6 +16,10 @@ class Beneficiary extends Model
     protected $table = 'beneficiaries';
     protected $guarded = ['id'];
 
+    protected $casts = [
+        'birthday' => 'date',
+    ];
+
     /*
     |--------------------------------------------------------------------------
     | ACCESSORS

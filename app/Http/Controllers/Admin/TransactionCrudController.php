@@ -26,6 +26,11 @@ class TransactionCrudController extends CrudController
         CRUD::setOperationSetting('showEntryCount', true);
         CRUD::setDefaultPageLength(25);
 
+        // Only show transactions from active (non-archived, non-deleted) imports
+        CRUD::addBaseClause('whereHas', 'import', function ($q) {
+            $q->whereNull('archived_at')->whereNull('deleted_at');
+        });
+
         // Profile name columns
         CRUD::addColumn([
             'name' => 'profile.first_name',
@@ -123,19 +128,9 @@ class TransactionCrudController extends CrudController
             'type' => 'text',
         ]);
         CRUD::addColumn([
-            'name' => 'profile.birth_year',
-            'label' => 'Profile Birth Year',
-            'type' => 'text',
-        ]);
-        CRUD::addColumn([
-            'name' => 'profile.birth_month',
-            'label' => 'Profile Birth Month',
-            'type' => 'text',
-        ]);
-        CRUD::addColumn([
-            'name' => 'profile.birth_day',
-            'label' => 'Profile Birth Day',
-            'type' => 'text',
+            'name' => 'profile.birthday',
+            'label' => 'Profile Birthday',
+            'type' => 'date',
         ]);
         CRUD::addColumn([
             'name' => 'profile.sex',
@@ -175,19 +170,9 @@ class TransactionCrudController extends CrudController
             'type' => 'text',
         ]);
         CRUD::addColumn([
-            'name' => 'beneficiary.birth_year',
-            'label' => 'Beneficiary Birth Year',
-            'type' => 'text',
-        ]);
-        CRUD::addColumn([
-            'name' => 'beneficiary.birth_month',
-            'label' => 'Beneficiary Birth Month',
-            'type' => 'text',
-        ]);
-        CRUD::addColumn([
-            'name' => 'beneficiary.birth_day',
-            'label' => 'Beneficiary Birth Day',
-            'type' => 'text',
+            'name' => 'beneficiary.birthday',
+            'label' => 'Beneficiary Birthday',
+            'type' => 'date',
         ]);
         CRUD::addColumn([
             'name' => 'beneficiary.sex',
