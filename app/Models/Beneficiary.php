@@ -18,6 +18,17 @@ class Beneficiary extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | ACCESSORS
+    |--------------------------------------------------------------------------
+    */
+
+    public function getFullNameAttribute()
+    {
+        return trim("{$this->last_name}, {$this->first_name} {$this->middle_name} {$this->extension_name}");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | RELATIONS
     |--------------------------------------------------------------------------
     */
@@ -30,5 +41,10 @@ class Beneficiary extends Model
     public function profiles()
     {
         return $this->hasMany(Profile::class);
+    }
+
+    public function transactions()
+    {
+        return $this->hasMany(Transaction::class);
     }
 }

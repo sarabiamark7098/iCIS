@@ -23,6 +23,13 @@ return new class extends Migration
             $table->integer('birth_day')->nullable();
             $table->enum('sex', ['male', 'female'])->nullable()->index();
             $table->string('civil_status')->nullable();
+            $table->string('contact_number')->nullable();
+            $table->string('occupation')->nullable();
+            $table->string('category')->nullable();
+            $table->string('region')->nullable();
+            $table->string('province')->nullable();
+            $table->string('city')->nullable();
+            $table->string('barangay')->nullable();
 
             $table->fullText(['first_name', 'last_name', 'middle_name']);
 

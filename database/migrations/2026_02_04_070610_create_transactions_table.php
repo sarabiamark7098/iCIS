@@ -14,10 +14,12 @@ return new class extends Migration
         Schema::create('transactions', function (Blueprint $table) {
             $table->id();
             $table->foreignId('import_id')->constrained('imports')->onDelete('cascade');
+            $table->string('entered_by')->nullable();
             $table->string('assistance_type')->nullable();
             $table->string('assistance_mode')->nullable();
             $table->string('assistance_amount')->nullable();
             $table->string('status')->nullable();
+            $table->string('remarks')->nullable();
             $table->date('completed_at')->nullable();
             $table->timestamps();
             $table->softDeletes();

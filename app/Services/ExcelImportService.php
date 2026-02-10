@@ -26,6 +26,7 @@ class ExcelImportService
         'id',
         'import_id',
         'beneficiary_id',
+        'profile_id',
         'created_at',
         'updated_at',
         'deleted_at',
@@ -281,13 +282,13 @@ class ExcelImportService
                     $records['profiles']['data'],
                     $timestamps
                 );
-                DB::table('profiles')->insert($proRecord);
+                $profileId = DB::table('profiles')->insertGetId($proRecord);
                 $stats['profiles_imported']++;
 
-                // Also insert transaction if mapped
+                // Also insert transaction if mapped, linked to profile and beneficiary
                 if (isset($records['transactions']) && $records['transactions']['has_data']) {
                     $txRecord = array_merge(
-                        ['import_id' => $importId],
+                        ['import_id' => $importId, 'profile_id' => $profileId, 'beneficiary_id' => $beneficiaryId],
                         $records['transactions']['data'],
                         $timestamps
                     );
@@ -308,13 +309,13 @@ class ExcelImportService
                     $benData,
                     $timestamps
                 );
-                DB::table('beneficiaries')->insert($benRecord);
+                $beneficiaryId = DB::table('beneficiaries')->insertGetId($benRecord);
                 $stats['beneficiaries_imported']++;
 
-                // Also insert transaction if mapped
+                // Also insert transaction if mapped, linked to beneficiary
                 if (isset($records['transactions']) && $records['transactions']['has_data']) {
                     $txRecord = array_merge(
-                        ['import_id' => $importId],
+                        ['import_id' => $importId, 'beneficiary_id' => $beneficiaryId],
                         $records['transactions']['data'],
                         $timestamps
                     );
@@ -335,12 +336,12 @@ class ExcelImportService
                     $benData,
                     $timestamps
                 );
-                DB::table('beneficiaries')->insert($benRecord);
+                $beneficiaryId = DB::table('beneficiaries')->insertGetId($benRecord);
                 $stats['beneficiaries_imported']++;
 
                 if (isset($records['transactions']) && $records['transactions']['has_data']) {
                     $txRecord = array_merge(
-                        ['import_id' => $importId],
+                        ['import_id' => $importId, 'beneficiary_id' => $beneficiaryId],
                         $records['transactions']['data'],
                         $timestamps
                     );
@@ -358,9 +359,12 @@ class ExcelImportService
 
         // ---- STANDARD MODE (no dual-name logic) ----
         $rowInserted = false;
+        $insertedBeneficiaryId = null;
+        $insertedProfileId = null;
 
-        foreach ($tableMap as $table => $colMap) {
-            if (!isset($records[$table]) || !$records[$table]['has_data']) {
+        // Insert beneficiaries and profiles first to get their IDs
+        foreach (['beneficiaries', 'profiles'] as $table) {
+            if (!isset($tableMap[$table]) || !isset($records[$table]) || !$records[$table]['has_data']) {
                 continue;
             }
 
@@ -370,15 +374,36 @@ class ExcelImportService
                 $timestamps
             );
 
-            DB::table($table)->insert($record);
+            $id = DB::table($table)->insertGetId($record);
             $rowInserted = true;
 
-            match ($table) {
-                'beneficiaries' => $stats['beneficiaries_imported']++,
-                'profiles' => $stats['profiles_imported']++,
-                'transactions' => $stats['transactions_imported']++,
-                default => null,
-            };
+            if ($table === 'beneficiaries') {
+                $insertedBeneficiaryId = $id;
+                $stats['beneficiaries_imported']++;
+            } elseif ($table === 'profiles') {
+                $insertedProfileId = $id;
+                $stats['profiles_imported']++;
+            }
+        }
+
+        // Insert transactions linked to profile and beneficiary
+        if (isset($tableMap['transactions']) && isset($records['transactions']) && $records['transactions']['has_data']) {
+            $record = array_merge(
+                ['import_id' => $importId],
+                $records['transactions']['data'],
+                $timestamps
+            );
+
+            if ($insertedProfileId) {
+                $record['profile_id'] = $insertedProfileId;
+            }
+            if ($insertedBeneficiaryId) {
+                $record['beneficiary_id'] = $insertedBeneficiaryId;
+            }
+
+            DB::table('transactions')->insert($record);
+            $rowInserted = true;
+            $stats['transactions_imported']++;
         }
 
         if (!$rowInserted) {

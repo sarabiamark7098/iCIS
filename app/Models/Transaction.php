@@ -26,4 +26,14 @@ class Transaction extends Model
     {
         return $this->belongsTo(Import::class);
     }
+
+    public function profile()
+    {
+        return $this->belongsTo(Profile::class);
+    }
+
+    public function beneficiary()
+    {
+        return $this->belongsTo(Beneficiary::class);
+    }
 }
